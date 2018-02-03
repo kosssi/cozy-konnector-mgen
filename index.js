@@ -1,4 +1,4 @@
-const {BaseKonnector, requestFactory, log, saveFiles, saveBills, errors} = require('cozy-konnector-libs')
+const {BaseKonnector, requestFactory, log, saveFiles, saveBills, errors, retry} = require('cozy-konnector-libs')
 const moment = require('moment')
 const bluebird = require('bluebird')
 
@@ -15,6 +15,7 @@ const connector = new BaseKonnector(start)
 
 function start (fields) {
   return connector.logIn(fields)
+  .then(connector.fetchCards)
   .then(connector.getSectionsUrls)
   .then(sections => {
     return connector.fetchAttestationMutuelle(sections.mutuelle, fields)
@@ -50,14 +51,17 @@ connector.logIn = function (fields) {
       throw new Error(errors.LOGIN_FAILED)
     }
 
-    const $tutoForm = $('#quitterTuto')
-    if ($tutoForm.length) {
-      log('error', 'You should definitively ignore the tutorial in your space')
-      throw new Error(errors.USER_ACTION_NEEDED)
-    }
-
     return $
   })
+}
+
+connector.fetchCards = function () {
+  // first fetches profilage data or else the next request won't work
+  return request({
+    url: `${baseUrl}/mon-espace-perso/?type=30303&_=${new Date().getTime()}`,
+    json: true
+  })
+  .then(() => request('https://www.mgen.fr/mon-espace-perso/?type=30304&_=' + new Date().getTime()))
 }
 
 connector.getSectionsUrls = function ($) {
@@ -126,7 +130,7 @@ connector.fetchReimbursements = function (url, fields) {
     formData['tx_mtechremboursement_mtechremboursementsante[rowIdOrder]'] = entries.map(entry => entry.indexLine).join(',')
     const action = unescape($formDetails.attr('action'))
 
-    return bluebird.mapSeries(entries, entry => connector.fetchDetailsReimbursement(entry, action, formData))
+    return bluebird.map(entries, entry => connector.fetchDetailsReimbursement(entry, action, formData), {concurrency: 5})
   })
 }
 
@@ -137,7 +141,7 @@ function convertAmount (amount) {
 
 connector.fetchDetailsReimbursement = function (entry, action, formData) {
   log('info', `Fetching details for line ${entry.indexLine}`)
-  formData['tx_mtechremboursement_mtechremboursementsante[indexLine]'] = entry.indexLine
+  formData['tx_mtechremboursement_mtechremboursementsante[indexLigne]'] = entry.indexLine
   return request({
     url: baseUrl + action,
     method: 'POST',
